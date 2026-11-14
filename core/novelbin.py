@@ -1,25 +1,29 @@
+from helpers.text import text_to_html
 from .scraper import Scraper
 from bs4 import BeautifulSoup
-from time import sleep
-
-from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote_plus, urljoin, urlparse
 
 class NovelBin(Scraper):
     """
-    Scraper for NovelBin novels.
+    Scraper for NovelBin-style sites (default host: novelping.com).
 
     Inherits from Scraper and provides methods to search, fetch metadata,
     and scrape chapter content from novelbin.me.
     """
 
-    def __init__(self, rate_limit=2):
+    def __init__(self, rate_limit=2, base_url="https://novelping.com"):
         """Initialize NovelBin scraper with base URL."""
         super().__init__(rate_limit)
-        self.base_url = "https://novelping.com"
-        self.last_chapter_scraped = None
-        self.chapter_num = 0
-        self.chapter_url = None
+        self.base_url = base_url.rstrip("/")
 
+    def normalize_url(self, url):
+        """Make a stored or scraped link usable"""
+
+        if not url:
+            return ""
+
+        absolute = urljoin(self.base_url + "/", url)
+        return absolute
 
     def search(self, keyword):
         """
@@ -31,22 +35,16 @@ class NovelBin(Scraper):
         Returns:
             str: The URL of the selected novel.
         """
-        url = f"{self.base_url}/search?keyword={keyword.replace(' ', '+')}"
-        reponse = self.retry_fetch(url)
-        links = BeautifulSoup(reponse, "html.parser").find_all(
-            "h3", class_="novel-title"
-        )
+        page = self.retry_fetch(f"{self.base_url}/search?keyword={quote_plus(keyword)}")
+        soup = BeautifulSoup(page, self.parser)
+        results = []
 
-        i = 0
-        array = []
-
-        for link in links:
-            array.append(str(link.find("a")["href"]))
-            print(f"{i}. {link.find('a').getText()}")
-            i += 1
-
-        answer = int(input("Select a novel by entering its number: "))
-        return array[answer]
+        for heading in soup.find_all("h3", class_="novel-title"):
+            link = heading.find("a", href=True)
+            if link:
+                results.append(
+                        {"title": link.get_text(strip=True), "url": self.normalize_url(link["href"])}
+                        )
 
     def metadata(self, url):
         """
