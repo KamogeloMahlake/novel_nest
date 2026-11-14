@@ -1,0 +1,14 @@
+cloudscraper
+bs4
+fake-useragent
+requests
+time
+psycopg2
+dotenv
+selenium
+webdriver-manager
+streamlit
+plotly
+pandas
+numpy
+python-dotenv
