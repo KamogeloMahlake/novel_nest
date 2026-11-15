@@ -43,7 +43,7 @@ class Scraper:
         sleep
     """
 
-    def __init__(self, rate_limit=2, session=None, retries=3, timeout=30, sleep=time.sleep):
+    def __init__(self, rate_limit: int =2, session: requests.Session | None =None, retries: int =3, timeout: int =30, sleep=time.sleep):
         """Initialize the base scraper with default settings."""
         self.rate_limit = rate_limit
         self.parser = "html.parser"
@@ -53,7 +53,7 @@ class Scraper:
         self.session = session if session is not None else make_session()
         self.last_error = None
 
-    def fetch(self, url):
+    def fetch(self, url) -> bytes:
         """
         Fetch content from a given URL.
 
@@ -78,7 +78,7 @@ class Scraper:
         finally:
             response.close()
 
-    def retry_fetch(self, url):
+    def retry_fetch(self, url: str) -> bytes:
         """
         Fetch content from a URL with retry logic.
 

@@ -1,7 +1,9 @@
 from helpers.text import text_to_html
-from .scraper import Scraper
+from .scraper import ScrapeError, Scraper
 from bs4 import BeautifulSoup
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, urljoin
+
+MAX_CHAPTERS = 20000
 
 class NovelBin(Scraper):
     """
@@ -11,21 +13,21 @@ class NovelBin(Scraper):
     and scrape chapter content from novelbin.me.
     """
 
-    def __init__(self, rate_limit=2, base_url="https://novelping.com"):
+    def __init__(self, rate_limit: int =2, base_url: str ="https://novelping.com"):
         """Initialize NovelBin scraper with base URL."""
         super().__init__(rate_limit)
         self.base_url = base_url.rstrip("/")
 
-    def normalize_url(self, url):
+    def normalize_url(self, url: str):
         """Make a stored or scraped link usable"""
 
         if not url:
             return ""
 
-        absolute = urljoin(self.base_url + "/", url)
+        absolute: str = urljoin(self.base_url + "/", url)
         return absolute
 
-    def search(self, keyword):
+    def search(self, keyword: str) -> list[dict]:
         """
         Search for novels by keyword on NovelBin.
 
@@ -35,6 +37,7 @@ class NovelBin(Scraper):
         Returns:
             str: The URL of the selected novel.
         """
+        
         page = self.retry_fetch(f"{self.base_url}/search?keyword={quote_plus(keyword)}")
         soup = BeautifulSoup(page, self.parser)
         results = []
@@ -46,7 +49,9 @@ class NovelBin(Scraper):
                         {"title": link.get_text(strip=True), "url": self.normalize_url(link["href"])}
                         )
 
-    def metadata(self, url):
+        return results
+
+    def metadata(self, url: str) -> tuple[dict, str]:
         """
         Extract metadata for a novel from NovelBin.
 
@@ -56,126 +61,91 @@ class NovelBin(Scraper):
         Returns:
             tuple: A tuple containing (metadata dict, next_chapter element).
         """
-        reponse = self.retry_fetch(url)
-        soup = BeautifulSoup(reponse, self.parser)
+        soup = BeautifulSoup(self.retry_fetch(self.normalize_url(url)), self.parser)
+        
+        title = soup.find("h3", class_="title")
+        if title is None:
+            raise ScrapeError("This does not look like a novel page (no title found).")
 
-        title = soup.find("h3", class_="title").getText()
-        try:
-            img = soup.find("img", class_="lazy")["data-src"]
-        except Exception:
-            img = None
-        desc = soup.find("div", class_="desc-text")
+        image = soup.find("img", class_="lazy")
+        description = soup.find("div", class_="desc-text")
+        info = soup.find("ul", class_="info info-meta")
+        author = "Unknown"
+        if info is not None:
+            lines = [line.strip() for line in info.get_text("\n").split("\n") if line.strip()]
+            if len(lines) >= 2:
+                author = lines[1]
 
-        try:
-            author = (
-                soup.find("ul", class_="info info-meta")
-                .getText()
-                .split(" ")[0]
-                .split("\n")[3]
-            )
-        except Exception:
-            author = "Unknown"
-
-        next_chapter = soup.find(title="READ NOW", href=True)
+        read_now = soup.find(title="READ NOW", href=True)
+        if read_now is None:
+            raise ScrapeError("No 'Read Now' link found, so the first chapter is unknown.")
         return {
-            "title": title,
-            "author": author,
-            "img_url": img,
-            "description": str(desc),
-        }, next_chapter['href']
+                "title": title.get_text(strip=True),
+                "author": author,
+                "img_url": self.normalize_url(image.get("data-src")) if image and image.get("data-src") else None,
+                "description": str(description) if description is not None else "",
+                }, self.normalize_url(read_now["href"])
 
-    def story(self, url=None):
+    @staticmethod
+    def _next_url(soup: BeautifulSoup) -> str | None:
+        """The link to the next chapter or None on the last chapter."""
+        links = soup.find_all("a", class_="js-chapter-nav")
+        for link in reversed(links[1:]):
+            href = (link.get("href") or "").strip()
+            if href and not href.startswith(("#", "javascript")) and "disabled" not in (link.get("class") or []):
+                return href
+        return None
+
+
+    def story(self, url: str) -> dict:
         """
         Fetch an entire novel including metadata and all chapters.
-
-        Prompts user for search keyword and fetches all available chapters.
-
-        Returns:
-            dict: Dictionary with 'metadata' and 'chapters' keys, or None if user exits.
         """
-        if url is None:
-            keyword = input(
-                "Enter a keyword to search for novels (or type 'exit' to quit): "
-            )
-            if keyword.lower() == "exit":
-                return None
-            metadata, self.chapter_url = self.metadata(self.search(keyword))
-
-        else:
-            metadata, self.chapter_url = self.metadata(url)
-        self.last_chapter_scraped = None
-
-        self.chapter_num = 0
-        chapters = []
-        sleep(self.rate_limit)
-        
-        while True:
-            try:
-                with ThreadPoolExecutor() as executor:
-                    future = executor.submit(self.chapter)
-                    title, content = future.result()
-                    print(f"Fetched chapter {self.chapter_num}: {title}")
-                    chapters.append((str(self.chapter_num), title, content))
-                    print(f"Fetching chapter from {self.chapter_url}")
-                    sleep(self.rate_limit)
-
-
-            except Exception as e:
-                print(f"{e}")
-                break
-        print("Scraping completed.")
-        print(f"{self.last_chapter_scraped} was the last chapter found.")
-        self.close()
+        metadata, first_url = self.metadata(url)
+        self.pause()
+        chapters, last_url = self._walk(first_url, 1)
         return {
-            "metadata": metadata,
-            "chapters": chapters,
-            "last_chapter_scraped": self.last_chapter_scraped,
-        }
+                "metadata": metadata,
+                "chapters": chapters,
+                "last_chapter_scraped": last_url if chapters else None,
+                "complete": self.last_error is None,
+                "error": self.last_error
+                }
 
-    def chapter(self):
+    def chapter(self, url: str, number: int | None = None) -> tuple[str, str, str | None]:
         """
         Fetch a specific chapter from a novel.
-
-        Args:
-            url (str): The chapter URL.
-            chapter_num (int): The current chapter number.
-
-        Returns:
-            tuple: A tuple containing (next_chapter element, chapter_num, title, content).
         """
-        try:
-            page = self.retry_fetch(self.chapter_url)
-        except Exception:
-            raise ValueError("Chapter not found")
-        soup = BeautifulSoup(page, "html.parser")
-        content = soup.find("div", id="chr-content").get_text(separator="\n")
+        soup = BeautifulSoup(self.retry_fetch(url), self.parser)
+        body = soup.find("div", id="chr-content")
+        if body is None:
+            raise ScrapeError(f"Chapter text not at {url}")
+        title_tag = soup.find("span", class_="chr-text") or soup.find("h2")
+        title = title_tag.get_text(strip=True) if title_tag else f"Chapter {number or ''}"
+        next_href = self._next_url(soup)
+        return title, text_to_html(body.get_text(separator="\n")), (self.normalize_url(next_href) if next_href else None)
 
-        try:
-            title = soup.find("span", class_="chr-text").getText(strip=True)
-        except TypeError:
-            title = soup.find("h2").getText(strip=True)
+    def _walk(self, url: str, number: int, last_url: str | None = None) -> tuple[list, str | None]:
+        """Follow nexts links from ``start_url``; return (chapters, last_url)"""
+        self.last_error = None
+        chapters, seen = [], set()
+        while url and url not in seen and len(chapters) < MAX_CHAPTERS:
+            seen.add(url)
+            try:
+                title, content, next_url = self.chapter(url, number)
+            except ScrapeError as e:
+                self.last_error = str(e)
+                break
+            chapters.append((str(number), title, content))
+            last_url = url
+            number += 1
+            url = next_url
+            if url:
+                self.pause()
+        return chapters, last_url
+        
 
-        self.chapter_num += 1
-        self.last_chapter_scraped = self.chapter_url
-        self.chapter_url = soup.find_all("a", class_="js-chapter-nav")[1]['href']
-
-        return title, str(self.text_to_html(content))
-
-    def text_to_html(self, text):
-        """
-        Convert plain text to HTML paragraphs.
-
-        Args:
-            text (str): Plain text with newline separators.
-
-        Returns:
-            str: HTML string with text wrapped in <p> tags.
-        """
-        array = text.split("\n")
-        html = [f"<p>{s}</p>" for s in array]
-        return "".join(html)
-
-    def update(self, last_chapter_url, last_chapter_number):
+    def update(self, last_chapter_url: str, last_chapter_number: int) -> tuple[list, str | None]:
         """
         Check for and fetch new chapters added to a novel since the last scrape.
 
@@ -185,33 +155,13 @@ class NovelBin(Scraper):
         Returns:
             tuple: A tuple containing (list of new chapters, last_chapter_scraped element).
         """
-        self.chapter_url = last_chapter_url
-        self.chapter_num = last_chapter_number
-        self.last_chapter_scraped = None
-        
-        try:
-            page = self.retry_fetch(self.chapter_url)
-        except Exception:
+        last_url = self.normalize_url(last_chapter_url)
+        soup = BeautifulSoup(self.retry_fetch(last_url), self.parser)
+        next_href = self._next_url(soup)
+        if not next_href:
+            self.last_error = None
             return [], last_chapter_url
-        
-        soup = BeautifulSoup(page, "html.parser")
-        self.chapter_url = soup.find_all("a", class_="js-chapter-nav")[1]['href']
-        new_chapters = []
+        self.pause()
 
-        sleep(self.rate_limit)
-
-        while True:
-            try:
-                with ThreadPoolExecutor() as executor:
-                    future = executor.submit(self.chapter)
-
-                    title, content = future.result()
-                    print(f"Fetched new chapter {self.chapter_num}: {title}")
-                    sleep(self.rate_limit)
-                    new_chapters.append((str(self.chapter_num), title, content))
-            
-            except Exception as e:
-                print(f"{e}")
-                break
-        self.close()
-        return new_chapters, self.last_chapter_scraped if self.last_chapter_scraped else self.chapter_url
+        chapters, new_last = self._walk(self.normalize_url(next_href), last_chapter_number + 1, last_url)
+        return chapters, new_last
