@@ -1,6 +1,22 @@
-from .scraper import Scraper
+import re
+
+from helpers.text import clean_html
+
+from .scraper import ScrapeError, Scraper
 from bs4 import BeautifulSoup
-from time import sleep
+
+_WORK_URL = re.compile(r"/works/(\d+)")
+_CHAPTER_ID = re.compile(r"^chapter-(\d+)$")
+
+def parse_work_id(value: int | str) -> str:
+    text = str(value).strip()
+    if text.isdigit():
+        return text
+    match = _WORK_URL.search(text)
+    if match:
+        return match.group(1)
+
+    raise ValueError("Enter a numeric AO3 work id or a link")
 
 
 class AO3(Scraper):
@@ -11,139 +27,93 @@ class AO3(Scraper):
     and chapter content from archiveofourown.org.
     """
 
-    def __init__(self):
+    def __init__(self, rate_limit: int = 2, base_url: str = "https://archiveofourown.org", **kwargs):
         """Initialize AO3 scraper with base URL."""
-        super().__init__()
-        self.base_url = "https://archiveofourown.org"
+        super().__init__(rate_limit, **kwargs)
+        self.base_url = base_url.rstrip("/")
 
-    def metadata(self, story_id, html=False):
+    def _work_page(self, work_id: str) -> BeautifulSoup:
+        url = f"{self.base_url}/works/{work_id}?view_adult=true&view_full_work=true"
+        return BeautifulSoup(self.retry_fetch(url), self.parser)
+
+    @staticmethod
+    def _metadata_from(soup: BeautifulSoup) -> dict:
+        title = soup.find("h2", class_="title heading")
+        if title is None:
+            raise ScrapeError("Work not found, restricted or blocked by site.")
+        author  = soup.find("a", rel="author")
+        summary = soup.select_one("div.summary.module")
+        return {
+                "title": title.get_text(strip=True),
+                "author": author.get_text(strip=True) if author else "Anonymous",
+                "description": str(summary)if summary is not None else "",
+                "img_url": None
+                }
+        
+
+    def metadata(self, work_id: int | str) -> dict:
         """
         Extract metadata for a story from AO3.
 
         Args:
             story_id (str): The story ID on AO3.
         """
-        url = (
-            f"{self.base_url}/works/{story_id}?view_adult=true&amp;view_full_work=true"
-        )
+        return self._metadata_from(self._work_page(parse_work_id(work_id)))
 
-        response = self.retry_fetch(url)
-        soup = BeautifulSoup(response, self.parser)
-        title = soup.find("h2", class_="title heading").get_text(strip=True)
-        author = soup.find("a", rel="author").get_text(strip=True)
-        description = soup.find("div", class_="summary module")
+    @staticmethod
+    def chapters_from(soup: BeautifulSoup) -> list:
+        blocks = [
+                (int(m.group(1)), div)
+                for div in soup.find_all("div", id=_CHAPTER_ID)
+                if (m := _CHAPTER_ID.match(div["id"]))
+                ]
 
-        metadata = {
-            "title": title,
-            "author": author,
-            "description": str(description),
-            "img_url": None,
-        }
-        if html:
-            return metadata, soup
-        return metadata
-
-    def story(self, story_id=None):
-        """
-        Fetch an entire story including metadata and all chapters.
-
-        Prompts user for story ID and fetches all available chapters
-        with retry logic.
-
-        Returns:
-            dict: Dictionary with 'metadata', 'chapters' and 'last_chapter_scraped' keys.
-        """
-        if story_id is None:
-            story_id = input("Enter story ID (or type 'exit' to quit): ")
-            if story_id.lower() == "exit":
-                return None
-        try:
-            metadata, soup = self.metadata(story_id, html=True)
-        except Exception as e:
-            print(f"Error fetching metadata: {e}")
-            return None
+        if not blocks:
+            single = soup.find(id="chapters")
+            if single is None:
+                return []
+            return [(1, "Chapter 1", clean_html(single))]
 
         chapters = []
-        chapter_number = 1
+        for position, (_, div) in enumerate(sorted(blocks, key=lambda b: b[0]), start=1):
+            title = div.find("h3", class_="title")
+            text = div.find("div", class_="userstuff")
+            if text is None:
+                continue
+            chapters.append(
+                    (str(position), title.get_text(strip=True) if title else f"Chapter {position}", clean_html(text))
+                    )
+        return chapters
 
-        while True:
-            try:
-                chapter_number, title, content = self.get_chapter(soup, chapter_number)
-                print(f"Fetched chapter {chapter_number}: {title}")
-                chapters.append((str(chapter_number), title, content))
-            except ValueError:
-                break
-
-        print("Scraping completed.")
-        self.close()
-        return {"metadata": metadata, "chapters": chapters, "ao3_id": str(story_id)}
-
-    def get_chapter(self, soup, chapter_number):
+    
+    def story(self, work: str | int ) -> dict:
         """
-        Fetch a specific chapter from a story soup.
-
-        Args:
-            soup (BeautifulSoup): The BeautifulSoup object of the story page.
-            chapter_number (int): The chapter number to fetch.
-        Returns:
-            tuple: A tuple containing (chapter_number, title, content).
+        Fetch an entire story including metadata and all chapters.
         """
-        chapter = soup.find("div", id=f"chapter-{chapter_number}")
-        if not chapter:
-            raise ValueError("Chapter not found")
-        title_tag = chapter.find("h3", class_="title")
-        title = (
-            title_tag.get_text(strip=True) if title_tag else f"Chapter {chapter_number}"
-        )
-        content = chapter.find("div", class_="userstuff")
-        return chapter_number + 1, title, content
+        work_id = parse_work_id(work)
+        soup = self._work_page(work_id)
+        metadata = self._metadata_from(soup)
+        chapters = self.chapters_from(soup)
+        self.last_error = None
+        
+        return {
+                "metadata": metadata, 
+                "chapters": chapters, 
+                "ao3_id": work_id,
+                "complete": True,
+                "error": None
+                }
 
-    def chapter(self, url, chapter_number):
-        """
-        Fetch a specific chapter from a story.
 
-        Args:
-            url (str): The URL of the chapter to fetch.
-            chapter_number (int): The chapter number to fetch.
-
-        Returns:
-            tuple: A tuple containing (next_chapter_href, chapter_number, title, content).
-        """
-        response = self.retry_fetch(url)
-        soup = BeautifulSoup(response, self.parser)
-        title = soup.find("h3", class_="title").get_text(strip=True)
-        content = soup.find("div", class_="userstuff")
-        next_chapter = soup.find("li", class_="next")
-        next_chapter_href = (
-            f"{self.base_url}{next_chapter.find('a')['href']}"
-            if next_chapter and next_chapter.find("a")
-            else None
-        )
-        if content is None:
-            raise ValueError("Chapter not found")
-        return next_chapter_href, chapter_number + 1, title, content
-
-    def update(self, story_id, last_chapter_number):
+    def update(self, work: int | str, last_chapter_number: int) -> tuple[list, str]:
         """
         Fetch new chapters from a story starting after the last scraped chapter.
         """
-        try:
-            _, soup = self.metadata(story_id, html=True)
-        except Exception as e:
-            return [], story_id
+        work_id = parse_work_id(work)
+        soup = self._work_page(work_id)
 
-        chapters = []
-        last_chapter_number += 1
-        while True:
-            try:
-                last_chapter_number, title, content = self.get_chapter(
-                    soup, last_chapter_number
-                )
-                print(f"Fetched chapter {last_chapter_number}: {title}")
-                chapters.append((str(last_chapter_number), title, content))
-            except ValueError:
-                break
+        new = [
+                (n, t, c) for n, t, c in self.chapters_from(soup) if int(n) > int(last_chapter_number)
+                ]
+        return new, work_id
 
-        print("Update completed.")
-        self.close()
-        return chapters, story_id
