@@ -1,6 +1,21 @@
-from .scraper import Scraper
+import re
+
+from .scraper import NotFound, ScrapeError, Scraper
 from bs4 import BeautifulSoup
-from time import sleep
+
+MAX_CHAPTERS = 5000
+_STORY_URL = re.compile(r"/s/(\d+)")
+
+def parse_story_id(value: int) -> str:
+    "Returns the id as text"
+    text = str(value).strip()
+    if text.isdigit():
+        return text
+
+    match = _STORY_URL.search(text)
+    if match:
+        return match.group(1)
+    raise ValueError("Enter a numeric Fanfiction.net story id or a story link.")
 
 
 class FanfictionNet(Scraper):
@@ -11,13 +26,13 @@ class FanfictionNet(Scraper):
     and chapter content from fanfiction.net.
     """
 
-    def __init__(self, rate_limit=2):
+    def __init__(self, rate_limit: int = 2, base_url: str = "https://m.fanfiction.net", **kwargs):
         """Initialize FanfictionNet scraper with base URL."""
-        super().__init__(rate_limit)
-        self.base_url = "https://m.fanfiction.net"
+        super().__init__(rate_limit, **kwargs)
+        self.base_url = base_url.rstrip("/")
         self.old_url = "https://www.fanfiction.net"
 
-    def metadata(self, story_id: int | str) -> dict:
+    def metadata(self, story_id: str ) -> dict:
         """
         Extract metadata for a story from FanfictionNet.
 
@@ -30,23 +45,41 @@ class FanfictionNet(Scraper):
         Raises:
             ValueError: If the story content cannot be found.
         """
-        url = f"{self.base_url}/s/{story_id}"
-        reponse = self.retry_fetch(url)
-        soup = BeautifulSoup(reponse, self.parser)
+        soup = BeautifulSoup(self.retry_fetch(f"{self.base_url}/s/{story_id}"), self.parser)
+    
         content = soup.find(id="content")
         if content is None:
-            raise ValueError("Story not found")
-        try:
-            return {
-                "title": content.find("b").get_text(strip=True),
-                "author": content.find("a").get_text(strip=True),
-                "description": " ",
-                "img_url": None,
-            }
-        except Exception:
-            return {}
+            raise NotFound("Story not found")
+        title, author = content.find("b"), content.find("a")
+        if title is None or author is None:
+            raise ScrapeError("The story has no title or author")
 
-    def story(self, story_id: int | str = "") -> dict:
+        return {
+                "title": title.get_text(strip=True),
+                "author": author.get_text(strip=True),
+                "description": " ",
+                "img_url": None
+                }
+
+    def _walk(self, story_id: str, start: int) -> list:
+        """Fetches chapters until one does not exist."""
+        self.last_error = None
+        chapters, number = [], start
+        while len(chapters) < MAX_CHAPTERS:
+            try:
+                content = self.chapter(story_id, number)
+            except NotFound:
+                break
+            except ScrapeError as e:
+                self.last_error = str(e)
+                break
+            chapters.append((str(number), f"Chapter {number}", content))
+            number += 1
+            self.pause()
+        return chapters
+
+
+    def story(self, story: int) -> dict:
         """
         Fetch an entire story including metadata and all chapters.
 
@@ -56,42 +89,19 @@ class FanfictionNet(Scraper):
         Returns:
             dict: Dictionary with 'metadata' and 'chapters' keys, or None if user exits.
         """
-        if not story_id:
-            story_id = input("Enter story ID (or type 'exit' to quit): ")
-            if story_id.lower() == "exit":
-                return {}
-
-            try:
-                story_id = int(story_id)
-            except ValueError:
-                print("Invalid story ID. Please enter a numeric ID.")
-                return {}
-
+        story_id = parse_story_id(story)
         metadata = self.metadata(story_id)
+        self.pause()
+        chapters = self._walk(story_id, 1)
+        return {
+                "metadata": metadata,
+                "chapters": chapters,
+                "fanfic_id": story_id,
+                "complete": self.last_error is None,
+                "error": self.last_error
+                }
 
-        chapters = []
-        chapter_number = 1
-
-        sleep(self.rate_limit)
-
-        while True:
-            try:
-                chapter_content = self.chapter(story_id, chapter_number)
-                print(f"Fetched chapter {chapter_number}")
-                sleep(self.rate_limit)
-                chapters.append(
-                    (str(chapter_number), f"Chapter {chapter_number}", chapter_content)
-                )
-                print(f"Fetching chapter {chapter_number + 1}")
-                chapter_number += 1
-            except Exception as e:
-                print(f"{e}")
-                break
-
-        self.close()
-        return {"metadata": metadata, "chapters": chapters, "fanfic_id": str(story_id)}
-
-    def chapter(self, story_id: int, chapter_number: int) -> str:
+    def chapter(self, story_id: str, chapter_number: int) -> str:
         """
         Fetch a specific chapter from a story.
 
@@ -109,41 +119,18 @@ class FanfictionNet(Scraper):
         reponse = self.retry_fetch(url)
 
         soup = BeautifulSoup(reponse, self.parser)
-
         chapter = soup.find(id="storycontent")
         if chapter is None:
-            raise ValueError("Chapter content not found")
+            raise NotFound("Chapter content not found")
 
         return str(chapter)
 
     def update(
-        self, story_id: int, last_chapter_number: int
-    ) -> tuple[list[tuple], int]:
+        self, story: int, last_chapter_number: int
+    ) -> tuple[list[tuple], str]:
         """
         Check for and fetch new chapters added to a story since the last scrape.
-        Args:
-            story_id (int): The story ID.
-            last_chapter_number (int): The last chapter number that was scraped.
-        Returns:
-            list: List of tuples containing (chapter_num, chapter_title, content) for new chapters.
         """
-        new_chapters = []
-        chapter_number = last_chapter_number + 1
-
-        sleep(self.rate_limit)
-
-        while True:
-            try:
-                chapter_content = self.chapter(story_id, chapter_number)
-                print(f"Fetched new chapter {chapter_number}")
-                sleep(self.rate_limit)
-                new_chapters.append(
-                    (str(chapter_number), f"Chapter {chapter_number}", chapter_content)
-                )
-                print(f"Fetching chapter {chapter_number + 1}")
-                chapter_number += 1
-            except Exception as e:
-                print(f"No more new chapters found: {e}")
-                break
-        self.close()
-        return new_chapters, story_id
+        story_id = parse_story_id(story)
+        return self._walk(story_id, int(last_chapter_number) + 1), story_id
+        

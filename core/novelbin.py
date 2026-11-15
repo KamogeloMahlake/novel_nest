@@ -13,9 +13,9 @@ class NovelBin(Scraper):
     and scrape chapter content from novelbin.me.
     """
 
-    def __init__(self, rate_limit: int =2, base_url: str ="https://novelping.com"):
+    def __init__(self, rate_limit: int =2, base_url: str ="https://novelping.com", **kwargs):
         """Initialize NovelBin scraper with base URL."""
-        super().__init__(rate_limit)
+        super().__init__(rate_limit, **kwargs)
         self.base_url = base_url.rstrip("/")
 
     def normalize_url(self, url: str):
