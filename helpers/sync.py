@@ -90,7 +90,7 @@ def update_novel(db: Database, ref: NovelRef, scrapers: Scrapers) -> int:
 
 @dataclass 
 class Outcome:
-    ref: object
+    ref: NovelRef
     added: int = 0
     error: str | None = None
 
