@@ -73,7 +73,7 @@ def scrape_menu(db: Database, scrapers: Scrapers, site: str):
         if input("Press Enter to scrape another, or type 'back': ").strip().lower() == "back":
             return
 def update_menu(db: Database, scrapers: Scrapers):
-    choice = input("1. NovelBin\n2. Fanfiction.net\n3. AO3\n4. All unfinished novels\nChoose 1-4").strip()
+    choice = input("1. NovelBin\n2. Fanfiction.net\n3. AO3\n4. All unfinished novels\nChoose 1-4: ").strip()
     source = {"1": "novelbin", "2": "fanfic", "3": "ao3", "4": "all"}.get(choice)
     if source is None:
         print("Invalid choice.")
@@ -81,7 +81,9 @@ def update_menu(db: Database, scrapers: Scrapers):
     run_update(db, scrapers, source)
 
 def run_update(db: Database, scrapers: Scrapers, source: str) -> UpdateReport:
+    print("3")
     refs = db.novels_for_update(source)
+    print("4")
     print(f"{len(refs)} novels to check.")
     report = update_novels(
             db, refs, scrapers, progress=lambda i, n, ref: print(f"[{i}/{n}] {ref.title}")

@@ -9,7 +9,7 @@ from typing import Any
 import psycopg2
 from psycopg2.extensions import connection, cursor
 import requests
-
+from datetime import datetime
 
 log = logging.getLogger(__name__)
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -111,7 +111,8 @@ class Database:
     
     def _run(self, sql: str, params: tuple = ()) -> cursor | sqlite3.Cursor:
         c = self.conn.cursor()
-        c.execute(sql.replace("%s", self.ph), params)
+
+        c.execute(sql, params)
         return c
 
     def _one(self, sql: str, params: tuple = ()) -> tuple[Any, ...] | None:
@@ -142,7 +143,7 @@ class Database:
                     (
                             meta["title"],
                             meta.get("author") or "Unknown",
-                            _now(),
+                            datetime.today().strftime("%d %B %Y %H:%M"),
                             False,
                             0,
                             str(meta.get("description") or ""),
@@ -218,7 +219,7 @@ class Database:
         self.conn.commit()
 
     def max_chapter_num(self, novel_id: str | int) -> int:
-        row = self._one("SELECT MAX(num) FROM novel_chapter WHERE novel_id = %s", (int(novel_id),))
+        row = self._one("SELECT MAX(num) FROM novel_chapter WHERE novel_id = %s", (novel_id,))
         return row[0] if row and row[0] is not None else 0
 
     def add_chapter(self, novel_id: str | int, title: str, num: int, content: str, commit: bool = True) -> bool:
@@ -227,7 +228,7 @@ class Database:
         self._run(
                 "INSERT INTO novel_chapter (title, num, novel_id, content, date, views) "
                 "VALUES (%s, %s, %s, %s, %s, %s)",
-                (title, int(num), int(novel_id), str(content), _now(), 0)
+                (title, int(num), int(novel_id), str(content), datetime.today().strftime("%d %B %Y %H:%M"), 0)
                 ).close()
         if commit:
             self.conn.commit()
@@ -247,7 +248,7 @@ class Database:
     def novels_for_update(self, source: str = "all") -> list[NovelRef]:
         """Unfinished novels that can be updated from ``source`` """
         c = self._run(
-                "SELECT id, title, fanfic_id, last_chapter_scraped, ao3_id FROM novel_novel"
+                "SELECT id, title, fanfic_id, last_chapter_scraped, ao3_id FROM novel_novel "
                 "WHERE status = FALSE ORDER BY id"
                 )
         refs = [NovelRef(*row) for row in c.fetchall()]
@@ -269,7 +270,7 @@ class Database:
 
     def all_chapters(self) -> list[tuple]:
         c = self._run(
-                "SELECT c.id, c.novel_id, c.title, c.num, c.date, c.views, n.title"
+                "SELECT c.id, c.novel_id, c.title, c.num, c.date, c.views, n.title "
                 "FROM novel_chapter c JOIN novel_novel n ON c.novel_id = n.id ORDER BY c.id"
                 )
         rows = c.fetchall()
