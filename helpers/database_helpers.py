@@ -90,7 +90,7 @@ class Database:
                 password=os.getenv("DB_PASSWORD"),
                 port=os.getenv("DB_PORT", "5432")
                 ) 
-        return cls(conn, "%s, media_dir")
+        return cls(conn, "%s", media_dir)
 
     @classmethod
     def sqlite(cls, path=":memory:", media="./media", **kwargs):
@@ -106,13 +106,13 @@ class Database:
     def __enter__(self):
         return self
 
-    def __exit__(self):
+    def __exit__(self, *e):
         self.close()
     
     def _run(self, sql: str, params: tuple = ()) -> cursor | sqlite3.Cursor:
         c = self.conn.cursor()
 
-        c.execute(sql, params)
+        c.execute(sql.replace("%s", self.ph), params)
         return c
 
     def _one(self, sql: str, params: tuple = ()) -> tuple[Any, ...] | None:

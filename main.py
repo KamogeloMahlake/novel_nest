@@ -169,6 +169,8 @@ def main(argv: list[str] | None =None, db: Database | None = None,  scrapers: Sc
         if args.command == "update":
             return 1 if run_update(db, scrapers, args.source).failures else 0
         if args.command == "export":
+            from ebook import export_all 
+            export_all(db, args.out or "ebooks")
             return 0
         interactive(db, scrapers)
         return 0
