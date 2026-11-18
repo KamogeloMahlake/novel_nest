@@ -74,6 +74,7 @@ class FanfictionNet(Scraper):
                 self.last_error = str(e)
                 break
             chapters.append((str(number), f"Chapter {number}", content))
+            print(f" - Scraped Chapter {number}")
             number += 1
             self.pause()
         return chapters

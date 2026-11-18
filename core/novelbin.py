@@ -137,6 +137,7 @@ class NovelBin(Scraper):
                 self.last_error = str(e)
                 break
             chapters.append((str(number), title, content))
+            print(f" - Scraped {title}: {url}")
             last_url = url
             number += 1
             url = next_url

@@ -80,9 +80,11 @@ class AO3(Scraper):
             text = div.find("div", class_="userstuff")
             if text is None:
                 continue
+
             chapters.append(
                     (str(position), title.get_text(strip=True) if title else f"Chapter {position}", clean_html(text))
                     )
+            print(f" - Scraped {title.get_text(strip=True)}")
         return chapters
 
     

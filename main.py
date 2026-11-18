@@ -1,6 +1,7 @@
 """ Command-line front end."""
 
 import logging
+import subprocess
 import sys
 
 from helpers.database_helpers import Database
@@ -149,11 +150,13 @@ def build_parser():
 
     search = sub.add_parser("search", help="search NovelBin")
     search.add_argument("keyword")
+
+    sub.add_parser("ui", help="Streamlit front end for the scrapers")
     return parser
 
 
 def main(argv: list[str] | None =None, db: Database | None = None,  scrapers: Scrapers | None = None):
-    args = build_parser().parse_args()
+    args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     own_db, own_scrapers = db is None, scrapers is None
     scrapers = scrapers or Scrapers()
@@ -169,9 +172,12 @@ def main(argv: list[str] | None =None, db: Database | None = None,  scrapers: Sc
         if args.command == "update":
             return 1 if run_update(db, scrapers, args.source).failures else 0
         if args.command == "export":
-            from ebook import export_all 
+            from services.ebook import export_all 
             export_all(db, args.out or "ebooks")
             return 0
+        if args.command == "ui":
+           subprocess.run(f"streamlit run scraper_ui.py", shell=True, check=True)
+           return 0
         interactive(db, scrapers)
         return 0
     except KeyboardInterrupt:
